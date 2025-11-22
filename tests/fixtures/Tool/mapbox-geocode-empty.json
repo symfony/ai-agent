@@ -1,5 +1,0 @@
-{
-  "type": "FeatureCollection",
-  "query": ["nonexistent", "location", "xyz123"],
-  "features": []
-}
