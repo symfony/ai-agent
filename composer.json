@@ -33,17 +33,11 @@
         "symfony/type-info": "^7.3|^8.0"
     },
     "require-dev": {
-        "masterminds/html5": "^2.8",
-        "mrmysql/youtube-transcript": "^0.0.5",
-        "nyholm/psr7": "^1.8",
-        "php-http/discovery": "^1.19",
         "phpstan/phpstan": "^2.0",
         "phpstan/phpstan-strict-rules": "^2.0",
         "phpunit/phpunit": "^11.5.13",
         "symfony/ai-store": "@dev",
         "symfony/cache": "^7.3|^8.0",
-        "symfony/css-selector": "^7.3|^8.0",
-        "symfony/dom-crawler": "^7.3|^8.0",
         "symfony/event-dispatcher": "^7.3|^8.0",
         "symfony/http-foundation": "^7.3|^8.0",
         "symfony/translation": "^7.3|^8.0",
