@@ -43,6 +43,7 @@
         "symfony/translation": "^7.3|^8.0",
         "symfony/translation-contracts": "^3.6"
     },
+    "minimum-stability": "dev",
     "autoload": {
         "psr-4": {
             "Symfony\\AI\\Agent\\": "src/"
@@ -66,6 +67,5 @@
             "name": "symfony/ai",
             "url": "https://github.com/symfony/ai"
         }
-    },
-    "minimum-stability": "dev"
+    }
 }
