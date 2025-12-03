@@ -34,7 +34,7 @@ final class Toolbox implements ToolboxInterface
     /**
      * List of executable tools.
      *
-     * @var list<mixed>
+     * @var list<object>
      */
     private readonly array $tools;
 
@@ -46,7 +46,7 @@ final class Toolbox implements ToolboxInterface
     private array $map;
 
     /**
-     * @param iterable<mixed> $tools
+     * @param iterable<object> $tools
      */
     public function __construct(
         iterable $tools,
