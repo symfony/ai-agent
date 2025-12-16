@@ -31,6 +31,7 @@
         "symfony/ai-platform": "@dev",
         "symfony/clock": "^7.3|^8.0",
         "symfony/http-client": "^7.3|^8.0",
+        "symfony/polyfill-php85": "^1.33",
         "symfony/property-access": "^7.3|^8.0",
         "symfony/property-info": "^7.3|^8.0",
         "symfony/serializer": "^7.3|^8.0",
