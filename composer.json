@@ -40,6 +40,7 @@
         "phpstan/phpstan": "^2.1",
         "phpstan/phpstan-strict-rules": "^2.0",
         "phpunit/phpunit": "^11.5.46",
+        "symfony/ai-platform": "@dev",
         "symfony/ai-store": "@dev",
         "symfony/event-dispatcher": "^7.3|^8.0",
         "symfony/translation": "^7.3|^8.0",
@@ -55,7 +56,8 @@
         "psr-4": {
             "Symfony\\AI\\Agent\\Tests\\": "tests/",
             "Symfony\\AI\\Fixtures\\": "../../fixtures",
-            "Symfony\\AI\\PHPStan\\": "../../.phpstan/"
+            "Symfony\\AI\\PHPStan\\": "../../.phpstan/",
+            "Symfony\\AI\\Platform\\Tests\\": "../platform/tests/"
         }
     },
     "config": {
