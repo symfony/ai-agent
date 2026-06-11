@@ -31,6 +31,21 @@ use Symfony\Contracts\Translation\TranslatorInterface;
 
 final class SystemPromptInputProcessorTest extends TestCase
 {
+    public function testGetSystemPromptReturnsTheConfiguredPrompt()
+    {
+        $processor = new SystemPromptInputProcessor('You are a helpful assistant.');
+        $this->assertSame('You are a helpful assistant.', $processor->getSystemPrompt());
+
+        $stringable = new class implements \Stringable {
+            public function __toString(): string
+            {
+                return 'stringable prompt';
+            }
+        };
+        $processor = new SystemPromptInputProcessor($stringable);
+        $this->assertSame($stringable, $processor->getSystemPrompt());
+    }
+
     public function testProcessInputAddsSystemMessageWhenNoneExists()
     {
         $processor = new SystemPromptInputProcessor('This is a system prompt');
