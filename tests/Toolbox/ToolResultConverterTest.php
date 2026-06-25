@@ -13,10 +13,12 @@ namespace Symfony\AI\Agent\Tests\Toolbox;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Symfony\AI\Agent\Exception\RuntimeException;
 use Symfony\AI\Agent\Toolbox\ToolResult;
 use Symfony\AI\Agent\Toolbox\ToolResultConverter;
 use Symfony\AI\Platform\Result\ToolCall;
 use Symfony\AI\Platform\Tests\Fixtures\StructuredOutput\UserWithConstructor;
+use Symfony\Component\Serializer\Exception\ExceptionInterface;
 
 final class ToolResultConverterTest extends TestCase
 {
@@ -27,6 +29,23 @@ final class ToolResultConverterTest extends TestCase
         $converter = new ToolResultConverter();
 
         $this->assertSame($expected, $converter->convert($toolResult));
+    }
+
+    public function testConvertFails()
+    {
+        $toolCall = new ToolCall('123456789', 'tool_name');
+        $notSerializeable = new \stdClass();
+        $notSerializeable->resource = fopen('php://memory', 'r');
+
+        $toolResult = new ToolResult($toolCall, $notSerializeable);
+        $converter = new ToolResultConverter();
+
+        try {
+            $converter->convert($toolResult);
+            $this->fail('Should have thrown before!');
+        } catch (RuntimeException $ex) {
+            $this->assertInstanceOf(ExceptionInterface::class, $ex->getPrevious(), 'Serializer exception expected!');
+        }
     }
 
     public static function provideResults(): \Generator

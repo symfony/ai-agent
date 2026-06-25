@@ -23,6 +23,7 @@ use Symfony\AI\Agent\Tests\Fixtures\Tool\ToolNoParams;
 use Symfony\AI\Agent\Tests\Fixtures\Tool\ToolOptionalParam;
 use Symfony\AI\Agent\Tests\Fixtures\Tool\ToolRequiredParams;
 use Symfony\AI\Agent\Tests\Fixtures\Tool\ToolSources;
+use Symfony\AI\Agent\Toolbox\Event\ToolCallRequested;
 use Symfony\AI\Agent\Toolbox\Exception\ToolConfigurationException;
 use Symfony\AI\Agent\Toolbox\Exception\ToolExecutionException;
 use Symfony\AI\Agent\Toolbox\Exception\ToolExecutionExceptionInterface;
@@ -37,6 +38,7 @@ use Symfony\AI\Agent\Toolbox\ToolResult;
 use Symfony\AI\Platform\Result\ToolCall;
 use Symfony\AI\Platform\Tool\ExecutionReference;
 use Symfony\AI\Platform\Tool\Tool;
+use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 
 final class ToolboxTest extends TestCase
 {
@@ -346,5 +348,73 @@ final class ToolboxTest extends TestCase
         $this->assertSame('Relevant Article', $source->getName());
         $this->assertSame('https://example.com/relevant-article', $source->getReference());
         $this->assertSame('Content of that relevant article.', $source->getContent());
+    }
+
+    public function testToolCallRequestDenied()
+    {
+        $dispatcher = $this->createMock(EventDispatcherInterface::class);
+        $dispatcher
+            ->method('dispatch')
+            ->willReturnCallback(static function (object $event, ?string $eventName = null) {
+                \assert($event instanceof ToolCallRequested);
+                $event->deny('You shall not pass!');
+
+                return $event;
+            });
+
+        $toolbox = new Toolbox([new ToolSources()], eventDispatcher: $dispatcher);
+        $result = $toolbox->execute(new ToolCall('call_1234', 'tool_sources', ['query' => 'random']));
+
+        $this->assertIsString($result->getResult());
+        $this->assertSame('You shall not pass!', $result->getResult());
+    }
+
+    public function testToolCallResult()
+    {
+        $dispatcher = $this->createMock(EventDispatcherInterface::class);
+        $dispatcher
+            ->method('dispatch')
+            ->willReturnCallback(static function (object $event, ?string $eventName = null) {
+                \assert($event instanceof ToolCallRequested);
+                $event->setResult(new ToolResult(new ToolCall('ABC', 'XYZ'), ['foo' => 'bar']));
+
+                return $event;
+            });
+
+        $toolbox = new Toolbox([new ToolSources()], eventDispatcher: $dispatcher);
+        $result = $toolbox->execute(new ToolCall('call_1234', 'tool_sources', ['query' => 'random']));
+
+        $this->assertIsArray($result->getResult());
+        $this->assertEqualsCanonicalizing(['foo' => 'bar'], $result->getResult());
+    }
+
+    public function testAbsentToolThrows()
+    {
+        $absentTool = new Tool(new ExecutionReference(\stdClass::class, 'someMethod'), 'absent_tool', 'A tool that is not in the toolbox');
+        $toolbox = new Toolbox([new ToolRequiredParams()], new ReflectionToolFactory());
+
+        $reflection = new \ReflectionClass($toolbox);
+        $toolsMetadataProperty = $reflection->getProperty('toolsMetadata');
+        $toolsMetadataProperty->setValue($toolbox, [$absentTool]);
+
+        $this->expectException(ToolNotFoundException::class);
+        $toolbox->execute(new ToolCall('call_1234', 'absent_tool'));
+    }
+
+    public function testToolCallViaMetaDataReflection()
+    {
+        $toolbox = new Toolbox([new ToolRequiredParams()], new ReflectionToolFactory());
+
+        // Initialize instanceMap + toolsMetadata
+        $tools = $toolbox->getTools();
+
+        // Clear instanceMap but keep toolsMetaData
+        $reflection = new \ReflectionClass($toolbox);
+        $instanceMapProperty = $reflection->getProperty('instanceMap');
+        $instanceMapProperty->setValue($toolbox, []);
+
+        $result = $toolbox->execute(new ToolCall('call_1234', 'tool_required_params', ['text' => 'Hello', 'number' => 3]));
+
+        $this->assertSame('Hello says "3".', $result->getResult());
     }
 }
