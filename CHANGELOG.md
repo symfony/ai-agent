@@ -1,6 +1,11 @@
 CHANGELOG
 =========
 
+0.13
+----
+
+ * `ValidateToolCallArgumentsListener` now also validates scalar and array tool parameters carrying a `#[Schema]` attribute (`pattern`, `minLength`/`maxLength`, `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`, `multipleOf`, `minItems`/`maxItems`, `uniqueItems`, `enum`, `const`), not only object parameters validated through Symfony Validator constraints
+
 0.12
 ----
 
