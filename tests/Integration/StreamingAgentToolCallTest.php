@@ -15,7 +15,6 @@ use PHPUnit\Framework\TestCase;
 use Symfony\AI\Agent\Agent;
 use Symfony\AI\Agent\Bridge\Clock\Clock;
 use Symfony\AI\Agent\Bridge\Wikipedia\Wikipedia;
-use Symfony\AI\Agent\Toolbox\AgentProcessor;
 use Symfony\AI\Agent\Toolbox\Source\SourceCollection;
 use Symfony\AI\Agent\Toolbox\Toolbox;
 use Symfony\AI\Platform\Message\Message;
@@ -129,8 +128,7 @@ final class StreamingAgentToolCallTest extends TestCase
             };
         });
 
-        $processor = new AgentProcessor($toolbox, includeSources: true);
-        $agent = new Agent($platform, 'gpt-4', [$processor], [$processor]);
+        $agent = new Agent($platform, 'gpt-4', toolbox: $toolbox, includeSources: true);
 
         $messages = new MessageBag(
             Message::forSystem('You are a helpful assistant. Check the current date for time-sensitive questions.'),

@@ -5,6 +5,8 @@ CHANGELOG
 ----
 
  * `ValidateToolCallArgumentsListener` now also validates scalar and array tool parameters carrying a `#[Schema]` attribute (`pattern`, `minLength`/`maxLength`, `minimum`/`maximum`/`exclusiveMinimum`/`exclusiveMaximum`, `multipleOf`, `minItems`/`maxItems`, `uniqueItems`, `enum`, `const`), not only object parameters validated through Symfony Validator constraints
+ * [BC BREAK] Remove `Toolbox\AgentProcessor`; tool calling is now driven by the `Agent` itself, configured with the `toolbox`, `toolExecutor`, `maxToolCalls`, `excludeToolMessages`, `includeSources` and `eventDispatcher` constructor arguments
+ * Add `Toolbox\ToolExecutorInterface` and its default `SequentialToolExecutor` implementation, making the execution of the requested tool calls replaceable
 
 0.12
 ----

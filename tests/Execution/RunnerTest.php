@@ -9,15 +9,14 @@
  * file that was distributed with this source code.
  */
 
-namespace Symfony\AI\Agent\Tests\Toolbox;
+namespace Symfony\AI\Agent\Tests\Execution;
 
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Agent\Agent;
 use Symfony\AI\Agent\AgentInterface;
 use Symfony\AI\Agent\Exception\MaxIterationsExceededException;
-use Symfony\AI\Agent\Input;
-use Symfony\AI\Agent\Output;
-use Symfony\AI\Agent\Toolbox\AgentProcessor;
+use Symfony\AI\Agent\Execution\Runner;
+use Symfony\AI\Agent\Toolbox\SequentialToolExecutor;
 use Symfony\AI\Agent\Toolbox\Source\Source;
 use Symfony\AI\Agent\Toolbox\Source\SourceCollection;
 use Symfony\AI\Agent\Toolbox\ToolboxInterface;
@@ -25,68 +24,58 @@ use Symfony\AI\Agent\Toolbox\ToolResult;
 use Symfony\AI\Platform\Message\AssistantMessage;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Message\ToolCallMessage;
-use Symfony\AI\Platform\PlainConverter;
 use Symfony\AI\Platform\PlatformInterface;
-use Symfony\AI\Platform\Result\DeferredResult;
-use Symfony\AI\Platform\Result\InMemoryRawResult;
 use Symfony\AI\Platform\Result\MultiPartResult;
+use Symfony\AI\Platform\Result\ResultInterface;
 use Symfony\AI\Platform\Result\Stream\Delta\TextDelta;
 use Symfony\AI\Platform\Result\Stream\Delta\ToolCallComplete;
 use Symfony\AI\Platform\Result\StreamResult;
 use Symfony\AI\Platform\Result\TextResult;
 use Symfony\AI\Platform\Result\ToolCall;
 use Symfony\AI\Platform\Result\ToolCallResult;
+use Symfony\AI\Platform\Test\InMemoryPlatform;
 use Symfony\AI\Platform\TokenUsage\TokenUsage;
 use Symfony\AI\Platform\TokenUsage\TokenUsageAggregation;
 use Symfony\AI\Platform\Tool\ExecutionReference;
 use Symfony\AI\Platform\Tool\Tool;
 
-class AgentProcessorTest extends TestCase
+final class RunnerTest extends TestCase
 {
-    public function testProcessInputWithoutRegisteredToolsWillResultInNoOptionChange()
+    public function testWithoutRegisteredToolsTheToolsOptionStaysUntouched()
     {
         $toolbox = $this->createStub(ToolboxInterface::class);
         $toolbox->method('getTools')->willReturn([]);
 
-        $processor = new AgentProcessor($toolbox);
-        $input = new Input('gpt-4', new MessageBag());
+        $options = $this->captureOptions($toolbox, []);
 
-        $processor->processInput($input);
-
-        $this->assertSame([], $input->getOptions());
+        $this->assertSame([], $options);
     }
 
-    public function testProcessInputWithRegisteredToolsWillResultInOptionChange()
+    public function testRegisteredToolsAreExposedAsToolsOption()
     {
         $toolbox = $this->createStub(ToolboxInterface::class);
         $tool1 = new Tool(new ExecutionReference('ClassTool1', 'method1'), 'tool1', 'description1', null);
         $tool2 = new Tool(new ExecutionReference('ClassTool2', 'method1'), 'tool2', 'description2', null);
         $toolbox->method('getTools')->willReturn([$tool1, $tool2]);
 
-        $processor = new AgentProcessor($toolbox);
-        $input = new Input('gpt-4', new MessageBag());
+        $options = $this->captureOptions($toolbox, []);
 
-        $processor->processInput($input);
-
-        $this->assertSame(['tools' => [$tool1, $tool2]], $input->getOptions());
+        $this->assertSame(['tools' => [$tool1, $tool2]], $options);
     }
 
-    public function testProcessInputWithRegisteredToolsButToolOverride()
+    public function testRegisteredToolsGetFilteredByTheToolsOption()
     {
         $toolbox = $this->createStub(ToolboxInterface::class);
         $tool1 = new Tool(new ExecutionReference('ClassTool1', 'method1'), 'tool1', 'description1', null);
         $tool2 = new Tool(new ExecutionReference('ClassTool2', 'method1'), 'tool2', 'description2', null);
         $toolbox->method('getTools')->willReturn([$tool1, $tool2]);
 
-        $processor = new AgentProcessor($toolbox);
-        $input = new Input('gpt-4', new MessageBag(), ['tools' => ['tool2']]);
+        $options = $this->captureOptions($toolbox, ['tools' => ['tool2']]);
 
-        $processor->processInput($input);
-
-        $this->assertSame(['tools' => [$tool2]], $input->getOptions());
+        $this->assertSame(['tools' => [$tool2]], $options);
     }
 
-    public function testProcessOutputWithToolCallResponseKeepingMessages()
+    public function testToolCallMessagesEndUpInTheCallersMessageBag()
     {
         $toolCall = new ToolCall('id1', 'tool1', ['arg1' => 'value1']);
         $toolbox = $this->createMock(ToolboxInterface::class);
@@ -96,23 +85,16 @@ class AgentProcessorTest extends TestCase
             ->willReturn(new ToolResult($toolCall, 'Test response'));
 
         $messageBag = new MessageBag();
-        $result = new ToolCallResult([$toolCall]);
 
-        $agent = $this->createStub(AgentInterface::class);
-
-        $processor = new AgentProcessor($toolbox, excludeToolMessages: false);
-        $processor->setAgent($agent);
-
-        $output = new Output('gpt-4', $result, $messageBag);
-
-        $processor->processOutput($output);
+        $runner = $this->createRunner($this->platform(new ToolCallResult([$toolCall])), $toolbox, excludeToolMessages: false);
+        $runner->run($this->createStub(AgentInterface::class), 'gpt-4', $messageBag, []);
 
         $this->assertCount(2, $messageBag);
         $this->assertInstanceOf(AssistantMessage::class, $messageBag->getMessages()[0]);
         $this->assertInstanceOf(ToolCallMessage::class, $messageBag->getMessages()[1]);
     }
 
-    public function testProcessOutputWithToolCallResponseForgettingMessages()
+    public function testToolCallMessagesAreKeptOutOfTheCallersMessageBagWhenExcluded()
     {
         $toolCall = new ToolCall('id1', 'tool1', ['arg1' => 'value1']);
         $toolbox = $this->createMock(ToolboxInterface::class);
@@ -122,21 +104,14 @@ class AgentProcessorTest extends TestCase
             ->willReturn(new ToolResult($toolCall, 'Test response'));
 
         $messageBag = new MessageBag();
-        $result = new ToolCallResult([$toolCall]);
 
-        $agent = $this->createStub(AgentInterface::class);
-
-        $processor = new AgentProcessor($toolbox, excludeToolMessages: true);
-        $processor->setAgent($agent);
-
-        $output = new Output('gpt-4', $result, $messageBag);
-
-        $processor->processOutput($output);
+        $runner = $this->createRunner($this->platform(new ToolCallResult([$toolCall])), $toolbox, excludeToolMessages: true);
+        $runner->run($this->createStub(AgentInterface::class), 'gpt-4', $messageBag, []);
 
         $this->assertCount(0, $messageBag);
     }
 
-    public function testProcessOutputWithMultiPartResultContainingToolCall()
+    public function testMultiPartResultContainingAToolCallGetsExecuted()
     {
         $toolCall = new ToolCall('id1', 'tool1', ['arg1' => 'value1']);
         $toolbox = $this->createMock(ToolboxInterface::class);
@@ -145,28 +120,22 @@ class AgentProcessorTest extends TestCase
             ->method('execute')
             ->willReturn(new ToolResult($toolCall, 'Test response'));
 
-        $messageBag = new MessageBag();
-        $toolCallResult = new ToolCallResult([$toolCall]);
         $result = new MultiPartResult([
             new TextResult('Some text before tool call'),
-            $toolCallResult,
+            new ToolCallResult([$toolCall]),
         ]);
 
         $agent = $this->createStub(AgentInterface::class);
         $agent->method('call')->willReturn(new TextResult('Final response'));
 
-        $processor = new AgentProcessor($toolbox);
-        $processor->setAgent($agent);
+        $runner = $this->createRunner($this->platform($result), $toolbox);
+        $actual = $runner->run($agent, 'gpt-4', new MessageBag(), []);
 
-        $output = new Output('gpt-4', $result, $messageBag);
-
-        $processor->processOutput($output);
-
-        $this->assertInstanceOf(TextResult::class, $output->getResult());
-        $this->assertSame('Final response', $output->getResult()->getContent());
+        $this->assertInstanceOf(TextResult::class, $actual);
+        $this->assertSame('Final response', $actual->getContent());
     }
 
-    public function testProcessOutputWithMultiPartResultContainingSeveralToolCallParts()
+    public function testMultiPartResultWithSeveralToolCallPartsExecutesAllOfThem()
     {
         $toolCall1 = new ToolCall('id1', 'tool1', ['arg1' => 'value1']);
         $toolCall2 = new ToolCall('id2', 'tool2', ['arg2' => 'value2']);
@@ -176,13 +145,12 @@ class AgentProcessorTest extends TestCase
         $toolbox
             ->expects($this->exactly(2))
             ->method('execute')
-            ->willReturnCallback(static function (ToolCall $toolCall) use (&$executed) {
+            ->willReturnCallback(static function (ToolCall $toolCall) use (&$executed): ToolResult {
                 $executed[] = $toolCall->getName();
 
                 return new ToolResult($toolCall, 'Test response');
             });
 
-        $messageBag = new MessageBag();
         $result = new MultiPartResult([
             new TextResult('Some text before tool calls'),
             new ToolCallResult([$toolCall1]),
@@ -192,22 +160,17 @@ class AgentProcessorTest extends TestCase
         $agent = $this->createStub(AgentInterface::class);
         $agent->method('call')->willReturn(new TextResult('Final response'));
 
-        $processor = new AgentProcessor($toolbox);
-        $processor->setAgent($agent);
-
-        $output = new Output('gpt-4', $result, $messageBag);
-
-        $processor->processOutput($output);
+        $runner = $this->createRunner($this->platform($result), $toolbox);
+        $runner->run($agent, 'gpt-4', new MessageBag(), []);
 
         $this->assertSame(['tool1', 'tool2'], $executed);
     }
 
-    public function testProcessOutputWithMultiPartResultNotContainingToolCall()
+    public function testMultiPartResultWithoutToolCallIsReturnedAsIs()
     {
         $toolbox = $this->createMock(ToolboxInterface::class);
         $toolbox->expects($this->never())->method('execute');
 
-        $messageBag = new MessageBag();
         $result = new MultiPartResult([
             new TextResult('Some text'),
             new TextResult('More text'),
@@ -216,14 +179,10 @@ class AgentProcessorTest extends TestCase
         $agent = $this->createMock(AgentInterface::class);
         $agent->expects($this->never())->method('call');
 
-        $processor = new AgentProcessor($toolbox);
-        $processor->setAgent($agent);
+        $runner = $this->createRunner($this->platform($result), $toolbox);
+        $actual = $runner->run($agent, 'gpt-4', new MessageBag(), []);
 
-        $output = new Output('gpt-4', $result, $messageBag);
-
-        $processor->processOutput($output);
-
-        $this->assertSame($result, $output->getResult());
+        $this->assertSame($result, $actual);
     }
 
     public function testSourcesEndUpInResultMetadataWithSettingOn()
@@ -237,22 +196,16 @@ class AgentProcessorTest extends TestCase
             ->method('execute')
             ->willReturn(new ToolResult($toolCall, 'Response based on the two articles.', new SourceCollection([$source1, $source2])));
 
-        $result = new ToolCallResult([$toolCall]);
-
         $agent = $this->createMock(AgentInterface::class);
         $agent
             ->expects($this->once())
             ->method('call')
             ->willReturn(new TextResult('Final response based on the two articles.'));
 
-        $processor = new AgentProcessor($toolbox, includeSources: true);
-        $processor->setAgent($agent);
+        $runner = $this->createRunner($this->platform(new ToolCallResult([$toolCall])), $toolbox, includeSources: true);
+        $result = $runner->run($agent, 'gpt-4', new MessageBag(), []);
 
-        $output = new Output('gpt-4', $result, new MessageBag());
-
-        $processor->processOutput($output);
-
-        $metadata = $output->getResult()->getMetadata();
+        $metadata = $result->getMetadata();
         $this->assertTrue($metadata->has('sources'));
         $this->assertInstanceOf(SourceCollection::class, $sources = $metadata->get('sources'));
         $this->assertCount(2, $sources);
@@ -262,31 +215,23 @@ class AgentProcessorTest extends TestCase
     public function testSourcesDoNotEndUpInResultMetadataWithSettingOff()
     {
         $toolCall = new ToolCall('call_1234', 'tool_sources', ['arg1' => 'value1']);
-        $source1 = new Source('Relevant Article 1', 'http://example.com/article1', 'Content of article about the topic');
-        $source2 = new Source('Relevant Article 2', 'http://example.com/article2', 'More content of article about the topic');
+        $source = new Source('Relevant Article 1', 'http://example.com/article1', 'Content of article about the topic');
         $toolbox = $this->createMock(ToolboxInterface::class);
         $toolbox
             ->expects($this->once())
             ->method('execute')
-            ->willReturn(new ToolResult($toolCall, 'Response based on the two articles.', new SourceCollection([$source1, $source2])));
-
-        $result = new ToolCallResult([$toolCall]);
+            ->willReturn(new ToolResult($toolCall, 'Response based on the article.', new SourceCollection([$source])));
 
         $agent = $this->createMock(AgentInterface::class);
         $agent
             ->expects($this->once())
             ->method('call')
-            ->willReturn(new TextResult('Final response based on the two articles.'));
+            ->willReturn(new TextResult('Final response based on the article.'));
 
-        $processor = new AgentProcessor($toolbox, includeSources: false);
-        $processor->setAgent($agent);
+        $runner = $this->createRunner($this->platform(new ToolCallResult([$toolCall])), $toolbox, includeSources: false);
+        $result = $runner->run($agent, 'gpt-4', new MessageBag(), []);
 
-        $output = new Output('gpt-4', $result, new MessageBag());
-
-        $processor->processOutput($output);
-
-        $metadata = $output->getResult()->getMetadata();
-        $this->assertFalse($metadata->has('sources'));
+        $this->assertFalse($result->getMetadata()->has('sources'));
     }
 
     public function testSourcesGetCollectedAcrossConsecutiveToolCalls()
@@ -302,29 +247,19 @@ class AgentProcessorTest extends TestCase
             ->method('execute')
             ->willReturnOnConsecutiveCalls(
                 new ToolResult($toolCall1, 'Response based on the first article.', new SourceCollection([$source1])),
-                new ToolResult($toolCall2, 'Response based on the second article.', new SourceCollection([$source2]))
+                new ToolResult($toolCall2, 'Response based on the second article.', new SourceCollection([$source2])),
             );
 
-        $result = new ToolCallResult([$toolCall1]);
+        $platform = $this->platform(
+            new ToolCallResult([$toolCall1]),
+            new ToolCallResult([$toolCall2]),
+            new TextResult('Final response based on both articles.'),
+        );
 
-        $platform = $this->createMock(PlatformInterface::class);
-        $platform
-            ->expects($this->exactly(2))
-            ->method('invoke')
-            ->willReturnOnConsecutiveCalls(
-                new DeferredResult(new PlainConverter(new ToolCallResult([$toolCall2])), new InMemoryRawResult()),
-                new DeferredResult(new PlainConverter(new TextResult('Final response based on both articles.')), new InMemoryRawResult())
-            );
+        $agent = new Agent($platform, 'foo-bar', toolbox: $toolbox, includeSources: true);
+        $result = $agent->call(new MessageBag());
 
-        $processor = new AgentProcessor($toolbox, includeSources: true);
-        $agent = new Agent($platform, 'foo-bar', [$processor], [$processor]);
-        $processor->setAgent($agent);
-
-        $output = new Output('gpt-4', $result, new MessageBag());
-
-        $processor->processOutput($output);
-
-        $metadata = $output->getResult()->getMetadata();
+        $metadata = $result->getMetadata();
         $this->assertTrue($metadata->has('sources'));
         $this->assertInstanceOf(SourceCollection::class, $sources = $metadata->get('sources'));
         $this->assertCount(2, $sources);
@@ -342,7 +277,7 @@ class AgentProcessorTest extends TestCase
             ->method('execute')
             ->willReturn(new ToolResult($toolCall, 'Response based on the two articles.', new SourceCollection([$source1, $source2])));
 
-        $result = new StreamResult((static function () use ($toolCall) {
+        $stream = new StreamResult((static function () use ($toolCall) {
             yield new TextDelta('chunk1');
             yield new TextDelta('chunk2');
             yield new ToolCallComplete([$toolCall]);
@@ -354,14 +289,11 @@ class AgentProcessorTest extends TestCase
             ->method('call')
             ->willReturn(new TextResult('Final response based on the two articles.'));
 
-        $processor = new AgentProcessor($toolbox, includeSources: true);
-        $processor->setAgent($agent);
+        $runner = $this->createRunner($this->platform($stream), $toolbox, includeSources: true);
+        $result = $runner->run($agent, 'gpt-4', new MessageBag(), []);
+        iterator_to_array($result->getContent());
 
-        $output = new Output('gpt-4', $result, new MessageBag());
-        $processor->processOutput($output);
-        iterator_to_array($output->getResult()->getContent());
-
-        $metadata = $output->getResult()->getMetadata();
+        $metadata = $result->getMetadata();
         $this->assertTrue($metadata->has('sources'));
         $this->assertInstanceOf(SourceCollection::class, $sources = $metadata->get('sources'));
         $this->assertCount(2, $sources);
@@ -377,7 +309,7 @@ class AgentProcessorTest extends TestCase
             ->method('execute')
             ->willReturn(new ToolResult($toolCall, 'Tool responded'));
 
-        $result = new StreamResult((static function () use ($toolCall) {
+        $stream = new StreamResult((static function () use ($toolCall) {
             yield new TextDelta('partial-1');
             yield new TextDelta('partial-2');
             yield new ToolCallComplete([$toolCall]);
@@ -387,21 +319,18 @@ class AgentProcessorTest extends TestCase
         $agent
             ->expects($this->once())
             ->method('call')
-            ->willReturnCallback(static function () {
+            ->willReturnCallback(static function (): TextResult {
                 $final = new TextResult('Final content after tool');
                 $final->getMetadata()->add('foo', 'bar');
 
                 return $final;
             });
 
-        $processor = new AgentProcessor($toolbox);
-        $processor->setAgent($agent);
+        $runner = $this->createRunner($this->platform($stream), $toolbox);
+        $result = $runner->run($agent, 'gpt-4', new MessageBag(), []);
+        iterator_to_array($result->getContent());
 
-        $output = new Output('gpt-4', $result, new MessageBag());
-        $processor->processOutput($output);
-        iterator_to_array($output->getResult()->getContent());
-
-        $metadata = $output->getResult()->getMetadata();
+        $metadata = $result->getMetadata();
         $this->assertTrue($metadata->has('foo'));
         $this->assertSame('bar', $metadata->get('foo'));
     }
@@ -416,7 +345,7 @@ class AgentProcessorTest extends TestCase
             ->willReturn(new ToolResult($toolCall, 'Tool responded'));
 
         // Streamed response that issues a tool call without any preceding text delta.
-        $result = new StreamResult((static function () use ($toolCall) {
+        $stream = new StreamResult((static function () use ($toolCall) {
             yield new ToolCallComplete([$toolCall]);
         })());
 
@@ -425,18 +354,15 @@ class AgentProcessorTest extends TestCase
         $agent
             ->expects($this->once())
             ->method('call')
-            ->willReturnCallback(static function (MessageBag $messages) use (&$capturedMessages) {
+            ->willReturnCallback(static function (MessageBag $messages) use (&$capturedMessages): TextResult {
                 $capturedMessages = $messages;
 
                 return new TextResult('Final response');
             });
 
-        $processor = new AgentProcessor($toolbox);
-        $processor->setAgent($agent);
-
-        $output = new Output('gpt-4', $result, new MessageBag());
-        $processor->processOutput($output);
-        iterator_to_array($output->getResult()->getContent());
+        $runner = $this->createRunner($this->platform($stream), $toolbox);
+        $result = $runner->run($agent, 'gpt-4', new MessageBag(), []);
+        iterator_to_array($result->getContent());
 
         $this->assertNotNull($capturedMessages);
         foreach ($capturedMessages->getMessages() as $message) {
@@ -455,7 +381,7 @@ class AgentProcessorTest extends TestCase
             ->method('execute')
             ->willReturn(new ToolResult($toolCall, 'Tool responded'));
 
-        $result = new StreamResult((static function () use ($toolCall) {
+        $stream = new StreamResult((static function () use ($toolCall) {
             yield new TextDelta('Let me ');
             yield new TextDelta('check that.');
             yield new ToolCallComplete([$toolCall]);
@@ -466,23 +392,20 @@ class AgentProcessorTest extends TestCase
         $agent
             ->expects($this->once())
             ->method('call')
-            ->willReturnCallback(static function (MessageBag $messages) use (&$capturedMessages) {
+            ->willReturnCallback(static function (MessageBag $messages) use (&$capturedMessages): TextResult {
                 $capturedMessages = $messages;
 
                 return new TextResult('Final response');
             });
 
-        $processor = new AgentProcessor($toolbox);
-        $processor->setAgent($agent);
-
-        $output = new Output('gpt-4', $result, new MessageBag());
-        $processor->processOutput($output);
-        iterator_to_array($output->getResult()->getContent());
+        $runner = $this->createRunner($this->platform($stream), $toolbox);
+        $result = $runner->run($agent, 'gpt-4', new MessageBag(), []);
+        iterator_to_array($result->getContent());
 
         $this->assertNotNull($capturedMessages);
         $textMessages = array_filter(
             $capturedMessages->getMessages(),
-            static fn ($message) => $message instanceof AssistantMessage && !$message->hasToolCalls(),
+            static fn ($message): bool => $message instanceof AssistantMessage && !$message->hasToolCalls(),
         );
         $this->assertCount(1, $textMessages);
         $this->assertSame('Let me check that.', reset($textMessages)->asText());
@@ -497,32 +420,29 @@ class AgentProcessorTest extends TestCase
             ->method('execute')
             ->willReturn(new ToolResult($toolCall, 'Tool responded'));
 
-        $result = new StreamResult((static function () use ($toolCall) {
+        $stream = new StreamResult((static function () use ($toolCall) {
             yield new TextDelta('partial-1');
             yield new TextDelta('partial-2');
             yield new ToolCallComplete([$toolCall]);
         })());
-        $result->getMetadata()->add('token_usage', new TokenUsage(totalTokens: 10));
+        $stream->getMetadata()->add('token_usage', new TokenUsage(totalTokens: 10));
 
         $agent = $this->createMock(AgentInterface::class);
         $agent
             ->expects($this->once())
             ->method('call')
-            ->willReturnCallback(static function () {
+            ->willReturnCallback(static function (): TextResult {
                 $toolResult = new TextResult('Final content after tool');
                 $toolResult->getMetadata()->add('token_usage', new TokenUsage(totalTokens: 10));
 
                 return $toolResult;
             });
 
-        $processor = new AgentProcessor($toolbox);
-        $processor->setAgent($agent);
+        $runner = $this->createRunner($this->platform($stream), $toolbox);
+        $result = $runner->run($agent, 'gpt-4', new MessageBag(), []);
+        iterator_to_array($result->getContent());
 
-        $output = new Output('gpt-4', $result, new MessageBag());
-        $processor->processOutput($output);
-        iterator_to_array($output->getResult()->getContent());
-
-        $usage = $output->getResult()->getMetadata()->get('token_usage');
+        $usage = $result->getMetadata()->get('token_usage');
         $this->assertInstanceOf(TokenUsageAggregation::class, $usage);
         $this->assertSame(20, $usage->getTotalTokens());
     }
@@ -535,23 +455,17 @@ class AgentProcessorTest extends TestCase
             ->method('execute')
             ->willReturn(new ToolResult($toolCall, 'Test response'));
 
-        $messageBag = new MessageBag();
-        $result = new ToolCallResult([$toolCall]);
-
         $agent = $this->createMock(AgentInterface::class);
         $agent
             ->method('call')
             ->willReturn(new ToolCallResult([$toolCall])); // Always returns tool call, causing infinite loop
 
-        $processor = new AgentProcessor($toolbox, maxToolCalls: 3);
-        $processor->setAgent($agent);
-
-        $output = new Output('gpt-4', $result, $messageBag);
+        $runner = $this->createRunner($this->platform(new ToolCallResult([$toolCall])), $toolbox, maxToolCalls: 3);
 
         $this->expectException(MaxIterationsExceededException::class);
         $this->expectExceptionMessage('Maximum number of tool calling iterations (3) exceeded.');
 
-        $processor->processOutput($output);
+        $runner->run($agent, 'gpt-4', new MessageBag(), []);
     }
 
     public function testCustomMaxIterationsLimitAllowsConfiguredIterations()
@@ -563,11 +477,8 @@ class AgentProcessorTest extends TestCase
             ->method('execute')
             ->willReturnOnConsecutiveCalls(
                 new ToolResult($toolCall1, 'Response 1'),
-                new ToolResult($toolCall2, 'Response 2')
+                new ToolResult($toolCall2, 'Response 2'),
             );
-
-        $messageBag = new MessageBag();
-        $result = new ToolCallResult([$toolCall1]);
 
         $agent = $this->createMock(AgentInterface::class);
         $agent
@@ -575,18 +486,14 @@ class AgentProcessorTest extends TestCase
             ->method('call')
             ->willReturnOnConsecutiveCalls(
                 new ToolCallResult([$toolCall2]),
-                new TextResult('Final response after two tool calls.')
+                new TextResult('Final response after two tool calls.'),
             );
 
         // Allow up to 5 iterations, we only need 2
-        $processor = new AgentProcessor($toolbox, maxToolCalls: 5);
-        $processor->setAgent($agent);
+        $runner = $this->createRunner($this->platform(new ToolCallResult([$toolCall1])), $toolbox, maxToolCalls: 5);
+        $result = $runner->run($agent, 'gpt-4', new MessageBag(), []);
 
-        $output = new Output('gpt-4', $result, $messageBag);
-
-        $processor->processOutput($output);
-
-        $this->assertInstanceOf(TextResult::class, $output->getResult());
+        $this->assertInstanceOf(TextResult::class, $result);
     }
 
     public function testSourcesAreResetAfterMaxIterationsException()
@@ -600,19 +507,22 @@ class AgentProcessorTest extends TestCase
             ->method('execute')
             ->willReturnOnConsecutiveCalls(
                 new ToolResult($failingToolCall, 'Response 1', new SourceCollection([$source])),
-                new ToolResult($successfulToolCall, 'Response 3', new SourceCollection([$source]))
+                new ToolResult($successfulToolCall, 'Response 3', new SourceCollection([$source])),
             );
 
-        $processor = new AgentProcessor($toolbox, includeSources: true, maxToolCalls: 1);
+        $platform = $this->platform(
+            new ToolCallResult([$failingToolCall]),
+            new ToolCallResult([$successfulToolCall]),
+        );
+        $runner = $this->createRunner($platform, $toolbox, maxToolCalls: 1, includeSources: true);
 
         $failingAgent = $this->createMock(AgentInterface::class);
         $failingAgent
             ->method('call')
             ->willReturn(new ToolCallResult([$failingToolCall]));
-        $processor->setAgent($failingAgent);
 
         try {
-            $processor->processOutput(new Output('gpt-4', new ToolCallResult([$failingToolCall]), new MessageBag()));
+            $runner->run($failingAgent, 'gpt-4', new MessageBag(), []);
             $this->fail('Expected MaxIterationsExceededException to be thrown.');
         } catch (MaxIterationsExceededException) {
         }
@@ -622,13 +532,61 @@ class AgentProcessorTest extends TestCase
             ->expects($this->once())
             ->method('call')
             ->willReturn(new TextResult('Final response'));
-        $processor->setAgent($successfulAgent);
 
-        $output = new Output('gpt-4', new ToolCallResult([$successfulToolCall]), new MessageBag());
-        $processor->processOutput($output);
+        $result = $runner->run($successfulAgent, 'gpt-4', new MessageBag(), []);
 
-        $metadata = $output->getResult()->getMetadata();
+        $metadata = $result->getMetadata();
         $this->assertTrue($metadata->has('sources'));
         $this->assertCount(1, $metadata->get('sources'));
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     *
+     * @return array<string, mixed>
+     */
+    private function captureOptions(ToolboxInterface $toolbox, array $options): array
+    {
+        $captured = [];
+        $platform = new InMemoryPlatform(static function (mixed $model, mixed $input, array $invocationOptions) use (&$captured): TextResult {
+            $captured = $invocationOptions;
+
+            return new TextResult('Done');
+        });
+
+        $runner = $this->createRunner($platform, $toolbox);
+        $runner->run($this->createStub(AgentInterface::class), 'gpt-4', new MessageBag(), $options);
+
+        return $captured;
+    }
+
+    private function createRunner(
+        PlatformInterface $platform,
+        ToolboxInterface $toolbox,
+        ?int $maxToolCalls = 50,
+        bool $excludeToolMessages = false,
+        bool $includeSources = false,
+    ): Runner {
+        return new Runner(
+            $platform,
+            $toolbox,
+            new SequentialToolExecutor($toolbox),
+            $maxToolCalls,
+            $excludeToolMessages,
+            $includeSources,
+        );
+    }
+
+    private function platform(ResultInterface ...$results): InMemoryPlatform
+    {
+        $invocation = 0;
+
+        return new InMemoryPlatform(static function () use (&$invocation, $results): ResultInterface {
+            if (!isset($results[$invocation])) {
+                throw new \LogicException(\sprintf('The platform was invoked %d times, but only %d results are configured.', $invocation + 1, \count($results)));
+            }
+
+            return $results[$invocation++];
+        });
     }
 }

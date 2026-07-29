@@ -13,29 +13,57 @@ namespace Symfony\AI\Agent;
 
 use Symfony\AI\Agent\Exception\InvalidArgumentException;
 use Symfony\AI\Agent\Exception\RuntimeException;
+use Symfony\AI\Agent\Execution\Runner;
+use Symfony\AI\Agent\Toolbox\SequentialToolExecutor;
+use Symfony\AI\Agent\Toolbox\ToolboxInterface;
+use Symfony\AI\Agent\Toolbox\ToolExecutorInterface;
 use Symfony\AI\Platform\Exception\ExceptionInterface;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Message\UserMessage;
 use Symfony\AI\Platform\PlatformInterface;
 use Symfony\AI\Platform\Result\ResultInterface;
+use Symfony\Contracts\EventDispatcher\EventDispatcherInterface;
 
 /**
  * @author Christopher Hertel <mail@christopher-hertel.de>
  */
 final class Agent implements AgentInterface
 {
+    private readonly Runner $runner;
+
     /**
      * @param InputProcessorInterface[]  $inputProcessors
      * @param OutputProcessorInterface[] $outputProcessors
      * @param non-empty-string           $model
+     * @param bool                       $excludeToolMessages keeps the messages appended during tool calling out of the caller's message bag
+     * @param bool                       $includeSources      exposes the sources collected during tool calling as `sources` result metadata
      */
     public function __construct(
-        private readonly PlatformInterface $platform,
+        PlatformInterface $platform,
         private readonly string $model,
         private readonly iterable $inputProcessors = [],
         private readonly iterable $outputProcessors = [],
         private readonly string $name = 'agent',
+        ?ToolboxInterface $toolbox = null,
+        ?ToolExecutorInterface $toolExecutor = null,
+        ?int $maxToolCalls = 50,
+        bool $excludeToolMessages = false,
+        bool $includeSources = false,
+        ?EventDispatcherInterface $eventDispatcher = null,
     ) {
+        if (null === $toolExecutor && $toolbox instanceof ToolboxInterface) {
+            $toolExecutor = new SequentialToolExecutor($toolbox);
+        }
+
+        $this->runner = new Runner(
+            $platform,
+            $toolbox,
+            $toolExecutor,
+            $maxToolCalls,
+            $excludeToolMessages,
+            $includeSources,
+            $eventDispatcher,
+        );
     }
 
     public function getModel(): string
@@ -74,7 +102,7 @@ final class Agent implements AgentInterface
         $messages = $input->getMessageBag();
         $options = $input->getOptions();
 
-        $result = $this->platform->invoke($model, $messages, $options)->getResult();
+        $result = $this->runner->run($this, $model, $messages, $options);
 
         $output = new Output($model, $result, $messages, $options);
         foreach ($this->outputProcessors as $outputProcessor) {
