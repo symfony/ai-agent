@@ -9,6 +9,7 @@ CHANGELOG
  * [BC BREAK] `Bridge\SimilaritySearch\SimilaritySearch::getUsedDocuments()` returns `Store\Document\VectorDocumentInterface[]` instead of `Store\Document\VectorDocument[]`, following the retriever it reads from
  * Add an optional `Stopwatch` to `Toolbox\TraceableToolbox` and `TraceableAgent`, timing each tool execution and the consumption of each agent execution
  * Add `Execution\Execution::isStreamed()`
+ * Add `Toolbox\FiberToolExecutor` to run tool calls concurrently through PHP Fibers, together with a `Toolbox\SuspendableTrait` for cooperative tools
 
 0.13
 ----
