@@ -101,6 +101,10 @@ final class ToolCallArgumentResolver implements ToolCallArgumentResolverInterfac
 
             $parameterType .= $dimensions;
 
+            if ('float' === $parameterType && \is_int($value)) {
+                $value = (float) $value;
+            }
+
             if ($this->denormalizer->supportsDenormalization($value, $parameterType, 'json')) {
                 $value = $this->denormalizer->denormalize($value, $parameterType, 'json');
             }
