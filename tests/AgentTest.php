@@ -16,11 +16,14 @@ use Symfony\AI\Agent\Agent;
 use Symfony\AI\Agent\AgentAwareInterface;
 use Symfony\AI\Agent\AgentInterface;
 use Symfony\AI\Agent\Exception\InvalidArgumentException;
+use Symfony\AI\Agent\Exception\MaxIterationsExceededException;
 use Symfony\AI\Agent\Input;
 use Symfony\AI\Agent\InputProcessorInterface;
 use Symfony\AI\Agent\Output;
 use Symfony\AI\Agent\OutputProcessorInterface;
 use Symfony\AI\Agent\Tests\Fixtures\MessageBagCapturingProcessor;
+use Symfony\AI\Agent\Toolbox\ToolboxInterface;
+use Symfony\AI\Agent\Toolbox\ToolResult;
 use Symfony\AI\Platform\Message\Content\Audio;
 use Symfony\AI\Platform\Message\Content\Image;
 use Symfony\AI\Platform\Message\Content\Text;
@@ -32,7 +35,11 @@ use Symfony\AI\Platform\PlatformInterface;
 use Symfony\AI\Platform\Result\DeferredResult;
 use Symfony\AI\Platform\Result\RawResultInterface;
 use Symfony\AI\Platform\Result\ResultInterface;
+use Symfony\AI\Platform\Result\ToolCall;
+use Symfony\AI\Platform\Result\ToolCallResult;
 use Symfony\AI\Platform\Test\InMemoryPlatform;
+use Symfony\AI\Platform\Tool\ExecutionReference;
+use Symfony\AI\Platform\Tool\Tool;
 
 final class AgentTest extends TestCase
 {
@@ -269,6 +276,34 @@ final class AgentTest extends TestCase
         $agent = new Agent($platform, 'gpt-4', $inputProcessors, $outputProcessors);
 
         $this->assertInstanceOf(AgentInterface::class, $agent);
+    }
+
+    public function testMaxToolCallsCapsTheToolCallingLoop()
+    {
+        $toolCall = new ToolCall('id1', 'tool1', ['arg1' => 'value1']);
+        $toolbox = $this->createMock(ToolboxInterface::class);
+        $toolbox
+            ->method('getTools')
+            ->willReturn([new Tool(new ExecutionReference('ClassTool1', 'method1'), 'tool1', 'description1', null)]);
+        $toolbox
+            ->method('execute')
+            ->willReturn(new ToolResult($toolCall, 'Test response'));
+
+        $invocations = 0;
+        $platform = new InMemoryPlatform(static function () use (&$invocations, $toolCall): ResultInterface {
+            if (++$invocations > 10) {
+                throw new \LogicException('The tool calling loop was not capped by max tool calls.');
+            }
+
+            return new ToolCallResult([$toolCall]);
+        });
+
+        $agent = new Agent($platform, 'gpt-4', toolbox: $toolbox, maxToolCalls: 3);
+
+        $this->expectException(MaxIterationsExceededException::class);
+        $this->expectExceptionMessage('Maximum number of tool calling iterations (3) exceeded.');
+
+        $agent->call(new MessageBag(), []);
     }
 
     public function testGetNameReturnsDefaultName()

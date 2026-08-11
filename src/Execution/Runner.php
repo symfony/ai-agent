@@ -51,6 +51,11 @@ final class Runner
      */
     private int $nestingLevel = 0;
 
+    /**
+     * Counts the tool calling rounds of one agent call, including the ones happening in nested agent calls.
+     */
+    private int $iterations = 0;
+
     public function __construct(
         private readonly PlatformInterface $platform,
         private readonly ?ToolboxInterface $toolbox = null,
@@ -69,6 +74,11 @@ final class Runner
      */
     public function run(AgentInterface $agent, string $model, MessageBag $messages, array $options): ResultInterface
     {
+        // nested calls continue the tool calling loop of the outermost call and share its budget
+        if (0 === $this->nestingLevel) {
+            $this->iterations = 0;
+        }
+
         $options = $this->exposeTools($options);
 
         $result = $this->platform->invoke($model, $messages, $options)->getResult();
@@ -143,9 +153,8 @@ final class Runner
         }
 
         try {
-            $iterations = 0;
             do {
-                if (null !== $this->maxToolCalls && ++$iterations > $this->maxToolCalls) {
+                if (null !== $this->maxToolCalls && ++$this->iterations > $this->maxToolCalls) {
                     throw new MaxIterationsExceededException($this->maxToolCalls);
                 }
 

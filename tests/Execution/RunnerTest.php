@@ -24,6 +24,7 @@ use Symfony\AI\Agent\Toolbox\ToolResult;
 use Symfony\AI\Platform\Message\AssistantMessage;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Message\ToolCallMessage;
+use Symfony\AI\Platform\Message\UserMessage;
 use Symfony\AI\Platform\PlatformInterface;
 use Symfony\AI\Platform\Result\MultiPartResult;
 use Symfony\AI\Platform\Result\ResultInterface;
@@ -455,17 +456,34 @@ final class RunnerTest extends TestCase
             ->method('execute')
             ->willReturn(new ToolResult($toolCall, 'Test response'));
 
-        $agent = $this->createMock(AgentInterface::class);
-        $agent
-            ->method('call')
-            ->willReturn(new ToolCallResult([$toolCall])); // Always returns tool call, causing infinite loop
-
-        $runner = $this->createRunner($this->platform(new ToolCallResult([$toolCall])), $toolbox, maxToolCalls: 3);
+        // the model keeps asking for tools, the platform provides more rounds than the limit allows
+        $runner = $this->createRunner($this->platform(...array_fill(0, 10, new ToolCallResult([$toolCall]))), $toolbox, maxToolCalls: 3);
 
         $this->expectException(MaxIterationsExceededException::class);
         $this->expectExceptionMessage('Maximum number of tool calling iterations (3) exceeded.');
 
-        $runner->run($agent, 'gpt-4', new MessageBag(), []);
+        $runner->run($this->recursiveAgent($runner), 'gpt-4', new MessageBag(), []);
+    }
+
+    public function testThrowsExceptionWhenMaxIterationsExceededWhileStreaming()
+    {
+        $toolCall = new ToolCall('id1', 'tool1', ['arg1' => 'value1']);
+        $toolbox = $this->createMock(ToolboxInterface::class);
+        $toolbox
+            ->method('execute')
+            ->willReturn(new ToolResult($toolCall, 'Test response'));
+
+        $streams = array_map(static fn (): StreamResult => new StreamResult((static function () use ($toolCall) {
+            yield new ToolCallComplete([$toolCall]);
+        })()), range(1, 10));
+
+        $runner = $this->createRunner($this->platform(...$streams), $toolbox, maxToolCalls: 3);
+        $result = $runner->run($this->recursiveAgent($runner), 'gpt-4', new MessageBag(), ['stream' => true]);
+
+        $this->expectException(MaxIterationsExceededException::class);
+        $this->expectExceptionMessage('Maximum number of tool calling iterations (3) exceeded.');
+
+        iterator_to_array($result->getContent());
     }
 
     public function testCustomMaxIterationsLimitAllowsConfiguredIterations()
@@ -474,26 +492,44 @@ final class RunnerTest extends TestCase
         $toolCall2 = new ToolCall('id2', 'tool2', ['arg1' => 'value2']);
         $toolbox = $this->createMock(ToolboxInterface::class);
         $toolbox
+            ->expects($this->exactly(2))
             ->method('execute')
             ->willReturnOnConsecutiveCalls(
                 new ToolResult($toolCall1, 'Response 1'),
                 new ToolResult($toolCall2, 'Response 2'),
             );
 
-        $agent = $this->createMock(AgentInterface::class);
-        $agent
-            ->expects($this->exactly(2))
-            ->method('call')
-            ->willReturnOnConsecutiveCalls(
-                new ToolCallResult([$toolCall2]),
-                new TextResult('Final response after two tool calls.'),
-            );
+        $platform = $this->platform(
+            new ToolCallResult([$toolCall1]),
+            new ToolCallResult([$toolCall2]),
+            new TextResult('Final response after two tool calls.'),
+        );
 
         // Allow up to 5 iterations, we only need 2
-        $runner = $this->createRunner($this->platform(new ToolCallResult([$toolCall1])), $toolbox, maxToolCalls: 5);
-        $result = $runner->run($agent, 'gpt-4', new MessageBag(), []);
+        $runner = $this->createRunner($platform, $toolbox, maxToolCalls: 5);
+        $result = $runner->run($this->recursiveAgent($runner), 'gpt-4', new MessageBag(), []);
 
         $this->assertInstanceOf(TextResult::class, $result);
+    }
+
+    public function testMaxIterationsLimitAppliesPerAgentCall()
+    {
+        $toolCall = new ToolCall('id1', 'tool1', ['arg1' => 'value1']);
+        $toolbox = $this->createMock(ToolboxInterface::class);
+        $toolbox
+            ->method('execute')
+            ->willReturn(new ToolResult($toolCall, 'Test response'));
+
+        $platform = $this->platform(
+            new ToolCallResult([$toolCall]),
+            new TextResult('First response'),
+            new ToolCallResult([$toolCall]),
+            new TextResult('Second response'),
+        );
+        $runner = $this->createRunner($platform, $toolbox, maxToolCalls: 1);
+
+        $this->assertSame('First response', $runner->run($this->recursiveAgent($runner), 'gpt-4', new MessageBag(), [])->getContent());
+        $this->assertSame('Second response', $runner->run($this->recursiveAgent($runner), 'gpt-4', new MessageBag(), [])->getContent());
     }
 
     public function testSourcesAreResetAfterMaxIterationsException()
@@ -512,28 +548,19 @@ final class RunnerTest extends TestCase
 
         $platform = $this->platform(
             new ToolCallResult([$failingToolCall]),
+            new ToolCallResult([$failingToolCall]),
             new ToolCallResult([$successfulToolCall]),
+            new TextResult('Final response'),
         );
         $runner = $this->createRunner($platform, $toolbox, maxToolCalls: 1, includeSources: true);
 
-        $failingAgent = $this->createMock(AgentInterface::class);
-        $failingAgent
-            ->method('call')
-            ->willReturn(new ToolCallResult([$failingToolCall]));
-
         try {
-            $runner->run($failingAgent, 'gpt-4', new MessageBag(), []);
+            $runner->run($this->recursiveAgent($runner), 'gpt-4', new MessageBag(), []);
             $this->fail('Expected MaxIterationsExceededException to be thrown.');
         } catch (MaxIterationsExceededException) {
         }
 
-        $successfulAgent = $this->createMock(AgentInterface::class);
-        $successfulAgent
-            ->expects($this->once())
-            ->method('call')
-            ->willReturn(new TextResult('Final response'));
-
-        $result = $runner->run($successfulAgent, 'gpt-4', new MessageBag(), []);
+        $result = $runner->run($this->recursiveAgent($runner), 'gpt-4', new MessageBag(), []);
 
         $metadata = $result->getMetadata();
         $this->assertTrue($metadata->has('sources'));
@@ -558,6 +585,33 @@ final class RunnerTest extends TestCase
         $runner->run($this->createStub(AgentInterface::class), 'gpt-4', new MessageBag(), $options);
 
         return $captured;
+    }
+
+    /**
+     * Mirrors what {@see Agent::call()} does with a tool call result: instead of handing it back to the
+     * runner, it re-enters the runner, which is where the tool calling loop is actually continued.
+     */
+    private function recursiveAgent(Runner $runner, string $model = 'gpt-4'): AgentInterface
+    {
+        return new class($runner, $model) implements AgentInterface {
+            public function __construct(
+                private readonly Runner $runner,
+                private readonly string $model,
+            ) {
+            }
+
+            public function call(string|MessageBag|UserMessage $input, array $options = []): ResultInterface
+            {
+                \assert($input instanceof MessageBag);
+
+                return $this->runner->run($this, $this->model, $input, $options);
+            }
+
+            public function getName(): string
+            {
+                return 'agent';
+            }
+        };
     }
 
     private function createRunner(
