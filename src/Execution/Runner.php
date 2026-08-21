@@ -12,7 +12,6 @@
 namespace Symfony\AI\Agent\Execution;
 
 use Symfony\AI\Agent\AgentInterface;
-use Symfony\AI\Agent\Exception\MaxIterationsExceededException;
 use Symfony\AI\Agent\Toolbox\Event\ToolCallsExecuted;
 use Symfony\AI\Agent\Toolbox\Source\SourceCollection;
 use Symfony\AI\Agent\Toolbox\StreamListener;
@@ -52,9 +51,9 @@ final class Runner
     private int $nestingLevel = 0;
 
     /**
-     * Counts the tool calling rounds of one agent call, including the ones happening in nested agent calls.
+     * Budget of the agent call currently driving the tool calling loop, shared with its nested calls.
      */
-    private int $iterations = 0;
+    private ToolCallBudget $budget;
 
     public function __construct(
         private readonly PlatformInterface $platform,
@@ -67,6 +66,7 @@ final class Runner
         private readonly ToolResultConverter $resultConverter = new ToolResultConverter(),
     ) {
         $this->sources = new SourceCollection();
+        $this->budget = new ToolCallBudget($maxToolCalls);
     }
 
     /**
@@ -76,8 +76,12 @@ final class Runner
     {
         // nested calls continue the tool calling loop of the outermost call and share its budget
         if (0 === $this->nestingLevel) {
-            $this->iterations = 0;
+            $this->budget = new ToolCallBudget($this->maxToolCalls);
         }
+
+        // the streaming loop starts when the result is consumed, which can be after another call
+        // already replaced the current budget, so it is captured here and passed along explicitly
+        $budget = $this->budget;
 
         $options = $this->exposeTools($options);
 
@@ -89,7 +93,7 @@ final class Runner
 
         if ($result instanceof StreamResult) {
             $result->addListener(new StreamListener(
-                fn (ToolCallResult $toolCallResult, ?AssistantMessage $streamedAssistantResponse = null): ResultInterface => $this->handleToolCalls($agent, $messages, $options, $toolCallResult, $streamedAssistantResponse),
+                fn (ToolCallResult $toolCallResult, ?AssistantMessage $streamedAssistantResponse = null): ResultInterface => $this->handleToolCalls($budget, $agent, $messages, $options, $toolCallResult, $streamedAssistantResponse),
             ));
 
             return $result;
@@ -101,7 +105,7 @@ final class Runner
             return $result;
         }
 
-        return $this->handleToolCalls($agent, $messages, $options, $toolCallResult);
+        return $this->handleToolCalls($budget, $agent, $messages, $options, $toolCallResult);
     }
 
     /**
@@ -141,10 +145,15 @@ final class Runner
     /**
      * @param array<string, mixed> $options
      */
-    private function handleToolCalls(AgentInterface $agent, MessageBag $messages, array $options, ToolCallResult $result, ?AssistantMessage $streamedAssistantResponse = null): ResultInterface
+    private function handleToolCalls(ToolCallBudget $budget, AgentInterface $agent, MessageBag $messages, array $options, ToolCallResult $result, ?AssistantMessage $streamedAssistantResponse = null): ResultInterface
     {
         \assert($this->toolExecutor instanceof ToolExecutorInterface);
 
+        // nested agent calls have to continue on the budget of the call this loop belongs to.
+        // Safe because this loop runs to completion with no suspension point, so no other call
+        // can install its budget in between; making this method lazy would break that.
+        $previousBudget = $this->budget;
+        $this->budget = $budget;
         ++$this->nestingLevel;
         $messages = $this->excludeToolMessages ? clone $messages : $messages;
 
@@ -154,9 +163,7 @@ final class Runner
 
         try {
             do {
-                if (null !== $this->maxToolCalls && ++$this->iterations > $this->maxToolCalls) {
-                    throw new MaxIterationsExceededException($this->maxToolCalls);
-                }
+                $budget->consume();
 
                 $toolCalls = array_values($result->getContent());
                 $toolResults = $this->toolExecutor->execute($toolCalls);
@@ -181,6 +188,7 @@ final class Runner
             } while ($result instanceof ToolCallResult);
         } finally {
             --$this->nestingLevel;
+            $this->budget = $previousBudget;
 
             if ($this->includeSources && 0 === $this->nestingLevel && $result instanceof ToolCallResult) {
                 $this->sources = new SourceCollection();

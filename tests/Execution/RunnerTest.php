@@ -42,6 +42,8 @@ use Symfony\AI\Platform\Tool\Tool;
 
 final class RunnerTest extends TestCase
 {
+    private const MAX_TOOL_CALLS = 3;
+
     public function testWithoutRegisteredToolsTheToolsOptionStaysUntouched()
     {
         $toolbox = $this->createStub(ToolboxInterface::class);
@@ -484,6 +486,46 @@ final class RunnerTest extends TestCase
         $this->expectExceptionMessage('Maximum number of tool calling iterations (3) exceeded.');
 
         iterator_to_array($result->getContent());
+    }
+
+    public function testMaxIterationsLimitIsNotSharedBetweenConcurrentStreams()
+    {
+        $toolCall = new ToolCall('id1', 'tool1', ['arg1' => 'value1']);
+        $executions = 0;
+        $toolbox = $this->createMock(ToolboxInterface::class);
+        $toolbox
+            ->method('execute')
+            ->willReturnCallback(static function () use ($toolCall, &$executions): ToolResult {
+                ++$executions;
+
+                return new ToolResult($toolCall, 'Test response');
+            });
+
+        // enough streams for both agent calls to exhaust a full budget of their own
+        $streams = array_map(static fn (): StreamResult => new StreamResult((static function () use ($toolCall) {
+            yield new ToolCallComplete([$toolCall]);
+        })()), range(1, 20));
+
+        $runner = $this->createRunner($this->platform(...$streams), $toolbox, maxToolCalls: self::MAX_TOOL_CALLS);
+        $agent = $this->recursiveAgent($runner);
+
+        // both streams are started before either one is consumed, so the tool calling loop of the
+        // first one only begins once the second call already returned its own StreamResult
+        $first = $runner->run($agent, 'gpt-4', new MessageBag(), ['stream' => true]);
+        $second = $runner->run($agent, 'gpt-4', new MessageBag(), ['stream' => true]);
+
+        // each call has to spend a full budget of its own before it gets capped
+        $expectedExecutions = 0;
+        foreach ([$first, $second] as $result) {
+            try {
+                iterator_to_array($result->getContent());
+                $this->fail('Expected MaxIterationsExceededException to be thrown.');
+            } catch (MaxIterationsExceededException) {
+            }
+
+            $expectedExecutions += self::MAX_TOOL_CALLS;
+            $this->assertSame($expectedExecutions, $executions);
+        }
     }
 
     public function testCustomMaxIterationsLimitAllowsConfiguredIterations()
