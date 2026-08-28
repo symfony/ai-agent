@@ -19,6 +19,9 @@ use Symfony\AI\Agent\Toolbox\Source\SourceCollection;
 use Symfony\AI\Agent\Toolbox\ToolboxInterface;
 use Symfony\AI\Agent\Toolbox\ToolExecutorInterface;
 use Symfony\AI\Agent\Toolbox\ToolResultConverter;
+use Symfony\AI\Platform\Message\AssistantMessage;
+use Symfony\AI\Platform\Message\Content\Text;
+use Symfony\AI\Platform\Message\Content\Thinking;
 use Symfony\AI\Platform\Message\Message;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Metadata\Metadata;
@@ -30,6 +33,7 @@ use Symfony\AI\Platform\Result\Stream\Delta\TextDelta;
 use Symfony\AI\Platform\Result\Stream\Delta\ToolCallComplete;
 use Symfony\AI\Platform\Result\StreamResult;
 use Symfony\AI\Platform\Result\TextResult;
+use Symfony\AI\Platform\Result\ThinkingResult;
 use Symfony\AI\Platform\Result\ToolCallResult;
 use Symfony\AI\Platform\StructuredOutput\Streaming\PartialObjectStreamListener;
 use Symfony\AI\Platform\Tool\Tool;
@@ -79,9 +83,9 @@ final class Runner
 
             $result = $this->platform->invoke($model, $messages, $options)->getResult();
 
-            $streamedText = '';
+            $assistantMessage = null;
             if ($result instanceof StreamResult) {
-                [$result, $streamedText] = yield from $this->consumeStream($result);
+                [$result, $assistantMessage] = yield from $this->consumeStream($result);
             }
 
             $toolCallResult = $this->extractToolCallResult($result);
@@ -96,14 +100,10 @@ final class Runner
                 throw new MaxIterationsExceededException($this->maxToolCalls);
             }
 
-            if ('' !== $streamedText) {
-                $messages->add(Message::ofAssistant($streamedText));
-            }
-
             $toolCalls = array_values($toolCallResult->getContent());
             $toolResults = yield from $this->toolExecutor->execute($toolCalls);
 
-            $messages->add(Message::ofAssistant(...$toolCalls));
+            $messages->add($assistantMessage ?? Message::ofAssistant($result));
             foreach ($toolResults as $i => $toolResult) {
                 $messages->add(Message::ofToolCall($toolCalls[$i], $this->resultConverter->convert($toolResult)));
 
@@ -137,7 +137,7 @@ final class Runner
      * The stream is drained completely even after a tool call was seen, since its metadata (e.g. token
      * usage) is only complete once the underlying generator is exhausted.
      *
-     * @return \Generator<int, UpdateInterface, mixed, array{ResultInterface, string}>
+     * @return \Generator<int, UpdateInterface, mixed, array{ResultInterface, AssistantMessage}>
      */
     private function consumeStream(StreamResult $stream): \Generator
     {
@@ -163,16 +163,46 @@ final class Runner
             yield new Progress('delta', 'Received a streamed delta.', $delta);
         }
 
+        $turn = $stream->getAssistantMessage();
+
         if ([] !== $toolCalls) {
             $result = new ToolCallResult($toolCalls);
         } else {
             // a streamed structured output round ends with the object assembled by the platform's listener
-            $result = $this->streamedObjectResult($stream) ?? new TextResult($text);
+            $result = $this->streamedObjectResult($stream) ?? $this->turnResult($turn, $text);
         }
 
         $result->getMetadata()->merge($stream->getMetadata());
 
-        return [$result, $text];
+        return [$result, $turn];
+    }
+
+    /**
+     * The streamed turn as the result the same round would have returned unstreamed, so a thinking
+     * block and its signature survive into the next turn.
+     */
+    private function turnResult(AssistantMessage $turn, string $text): ResultInterface
+    {
+        $parts = [];
+        foreach ($turn->getContent() as $content) {
+            if ($content instanceof Thinking) {
+                $parts[] = new ThinkingResult($content->getContent(), $content->getSignature());
+            }
+
+            if ($content instanceof Text) {
+                $parts[] = new TextResult($content->getText(), $content->getSignature());
+            }
+        }
+
+        if ([] === $parts) {
+            return new TextResult($text);
+        }
+
+        if (1 === \count($parts) && $parts[0] instanceof TextResult) {
+            return $parts[0];
+        }
+
+        return new MultiPartResult($parts);
     }
 
     private function streamedObjectResult(StreamResult $stream): ?ObjectResult

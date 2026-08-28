@@ -23,16 +23,22 @@ use Symfony\AI\Agent\Toolbox\Source\SourceCollection;
 use Symfony\AI\Agent\Toolbox\ToolboxInterface;
 use Symfony\AI\Agent\Toolbox\ToolResult;
 use Symfony\AI\Platform\Message\AssistantMessage;
+use Symfony\AI\Platform\Message\Content\File;
+use Symfony\AI\Platform\Message\Content\Text;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Message\ToolCallMessage;
 use Symfony\AI\Platform\PlatformInterface;
+use Symfony\AI\Platform\Result\BinaryResult;
 use Symfony\AI\Platform\Result\MultiPartResult;
 use Symfony\AI\Platform\Result\ObjectResult;
 use Symfony\AI\Platform\Result\ResultInterface;
 use Symfony\AI\Platform\Result\Stream\Delta\TextDelta;
+use Symfony\AI\Platform\Result\Stream\Delta\ThinkingDelta;
+use Symfony\AI\Platform\Result\Stream\Delta\ThinkingSignature;
 use Symfony\AI\Platform\Result\Stream\Delta\ToolCallComplete;
 use Symfony\AI\Platform\Result\StreamResult;
 use Symfony\AI\Platform\Result\TextResult;
+use Symfony\AI\Platform\Result\ThinkingResult;
 use Symfony\AI\Platform\Result\ToolCall;
 use Symfony\AI\Platform\Result\ToolCallResult;
 use Symfony\AI\Platform\StructuredOutput\Serializer;
@@ -134,6 +140,33 @@ final class RunnerTest extends TestCase
 
         $this->assertInstanceOf(TextResult::class, $actual);
         $this->assertSame('Final response', $actual->getContent());
+    }
+
+    public function testToolCallAlongsideBinaryOutputStillGetsExecuted()
+    {
+        $toolCall = new ToolCall('id1', 'tool1', ['arg1' => 'value1']);
+        $toolbox = $this->createMock(ToolboxInterface::class);
+        $toolbox
+            ->expects($this->once())
+            ->method('execute')
+            ->willReturn(new ToolResult($toolCall, 'Test response'));
+
+        // Gemini returns inlineData next to a functionCall, the Responses API an image_generation_call
+        $result = new MultiPartResult([
+            new BinaryResult('binary-image-bytes', 'image/png'),
+            new ToolCallResult([$toolCall]),
+        ]);
+
+        $messages = new MessageBag();
+        $platform = $this->platform($result, new TextResult('Final response'));
+        $actual = $this->drive($this->createRunner($platform, $toolbox), $messages);
+
+        $this->assertInstanceOf(TextResult::class, $actual);
+
+        $assistantMessage = $messages->getMessages()[0];
+        $this->assertInstanceOf(AssistantMessage::class, $assistantMessage);
+        $this->assertSame([$toolCall], $assistantMessage->getToolCalls());
+        $this->assertInstanceOf(File::class, $assistantMessage->getContent()[0]);
     }
 
     public function testMultiPartResultWithSeveralToolCallPartsExecutesAllOfThem()
@@ -343,12 +376,50 @@ final class RunnerTest extends TestCase
         $platform = $this->platform($stream, new TextResult('Final response'));
         $this->drive($this->createRunner($platform, $toolbox), $messages);
 
-        $textMessages = array_filter(
+        $assistantMessages = array_values(array_filter(
             $messages->getMessages(),
-            static fn ($message): bool => $message instanceof AssistantMessage && !$message->hasToolCalls(),
+            static fn ($message): bool => $message instanceof AssistantMessage,
+        ));
+
+        $this->assertCount(1, $assistantMessages);
+        $this->assertSame('Let me check that.', $assistantMessages[0]->asText());
+        $this->assertSame([$toolCall], $assistantMessages[0]->getToolCalls());
+        $this->assertEquals(
+            [new Text('Let me check that.'), $toolCall],
+            $assistantMessages[0]->getContent(),
         );
-        $this->assertCount(1, $textMessages);
-        $this->assertSame('Let me check that.', reset($textMessages)->asText());
+    }
+
+    public function testAStreamedRoundReturnsTheSameResultABufferedOneWould()
+    {
+        $stream = new StreamResult((static function () {
+            yield new ThinkingDelta('let me think');
+            yield new ThinkingSignature('sig-abc');
+            yield new TextDelta('It is 10:00.');
+        })());
+
+        $actual = $this->drive($this->createRunner($this->platform($stream), $this->createMock(ToolboxInterface::class)), new MessageBag());
+
+        // flattening the turn to its text drops the signature providers require on the next turn
+        $this->assertInstanceOf(MultiPartResult::class, $actual);
+        $this->assertEquals(
+            [new ThinkingResult('let me think', 'sig-abc'), new TextResult('It is 10:00.')],
+            $actual->getContent(),
+        );
+        $this->assertSame('It is 10:00.', $actual->asText());
+    }
+
+    public function testAStreamedRoundOfPlainTextStaysATextResult()
+    {
+        $stream = new StreamResult((static function () {
+            yield new TextDelta('It is ');
+            yield new TextDelta('10:00.');
+        })());
+
+        $actual = $this->drive($this->createRunner($this->platform($stream), $this->createMock(ToolboxInterface::class)), new MessageBag());
+
+        $this->assertInstanceOf(TextResult::class, $actual);
+        $this->assertSame('It is 10:00.', $actual->getContent());
     }
 
     public function testUsageMetadataGetsPropagatedInStreaming()
