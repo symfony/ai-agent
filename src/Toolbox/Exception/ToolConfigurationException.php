@@ -38,4 +38,9 @@ final class ToolConfigurationException extends InvalidArgumentException implemen
             $secondTool->getReference()->getMethod(),
         ));
     }
+
+    public static function invalidMapToolArguments(string $toolClass, string $methodName, string $reason): self
+    {
+        return new self(\sprintf('Invalid #[MapToolArguments] usage on "%s::%s": %s', $toolClass, $methodName, $reason));
+    }
 }
