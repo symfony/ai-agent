@@ -11,11 +11,13 @@
 
 namespace Symfony\AI\Agent;
 
+use Symfony\AI\Agent\Execution\Cancellation;
 use Symfony\AI\Agent\Execution\Execution;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Message\UserMessage;
 use Symfony\Component\Clock\ClockInterface;
 use Symfony\Component\Clock\MonotonicClock;
+use Symfony\Component\Stopwatch\Stopwatch;
 use Symfony\Contracts\Service\ResetInterface;
 
 /**
@@ -37,6 +39,7 @@ final class TraceableAgent implements AgentInterface, ResetInterface
     public function __construct(
         private readonly AgentInterface $agent,
         private readonly ClockInterface $clock = new MonotonicClock(),
+        private readonly ?Stopwatch $stopwatch = null,
     ) {
     }
 
@@ -48,7 +51,29 @@ final class TraceableAgent implements AgentInterface, ResetInterface
             'called_at' => $this->clock->now(),
         ];
 
-        return $this->agent->call($input, $options);
+        $execution = $this->agent->call($input, $options);
+
+        if (null === $this->stopwatch) {
+            return $execution;
+        }
+
+        $stopwatch = $this->stopwatch;
+        $eventName = \sprintf('ai.agent.call "%s"', $this->agent->getName());
+        $cancellation = new Cancellation();
+
+        // The agent only runs while its execution is consumed, so the event spans the consumption
+        return new Execution(static function () use ($execution, $stopwatch, $eventName, $cancellation): \Generator {
+            $event = $stopwatch->start($eventName, 'ai');
+
+            try {
+                yield from $cancellation->forward($execution);
+            } finally {
+                // The profiler may have already closed the event when the execution is consumed late
+                if ($event->isStarted()) {
+                    $event->stop();
+                }
+            }
+        }, $execution->isStreamed(), $cancellation);
     }
 
     public function getName(): string

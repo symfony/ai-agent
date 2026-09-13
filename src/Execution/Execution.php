@@ -111,6 +111,14 @@ final class Execution implements \IteratorAggregate, ResultInterface
     }
 
     /**
+     * Whether the answer is streamed, in which case getContent() yields the deltas.
+     */
+    public function isStreamed(): bool
+    {
+        return $this->streamed;
+    }
+
+    /**
      * Cancels the execution and its active HTTP response.
      */
     public function cancel(): void

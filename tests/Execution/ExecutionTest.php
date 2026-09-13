@@ -389,6 +389,14 @@ final class ExecutionTest extends TestCase
         $this->assertSame($object, $execution->asObject());
     }
 
+    public function testIsStreamed()
+    {
+        $factory = static fn (): \Generator => yield new ResultUpdate(new TextResult('Hello'));
+
+        $this->assertFalse((new Execution($factory))->isStreamed());
+        $this->assertTrue((new Execution($factory, true))->isStreamed());
+    }
+
     public function testAsStreamThrowsWhenTheExecutionIsNotStreamed()
     {
         $execution = new Execution(static function (): \Generator {
