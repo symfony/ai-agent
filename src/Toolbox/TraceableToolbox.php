@@ -12,6 +12,7 @@
 namespace Symfony\AI\Agent\Toolbox;
 
 use Symfony\AI\Platform\Result\ToolCall;
+use Symfony\Component\Stopwatch\Stopwatch;
 use Symfony\Contracts\Service\ResetInterface;
 
 /**
@@ -26,6 +27,7 @@ final class TraceableToolbox implements ToolboxInterface, ResetInterface
 
     public function __construct(
         private readonly ToolboxInterface $toolbox,
+        private readonly ?Stopwatch $stopwatch = null,
     ) {
     }
 
@@ -36,7 +38,13 @@ final class TraceableToolbox implements ToolboxInterface, ResetInterface
 
     public function execute(ToolCall $toolCall): ToolResult
     {
-        return $this->calls[] = $this->toolbox->execute($toolCall);
+        $event = $this->stopwatch?->start(\sprintf('ai.toolbox.execute "%s"', $toolCall->getName()), 'ai');
+
+        try {
+            return $this->calls[] = $this->toolbox->execute($toolCall);
+        } finally {
+            $event?->stop();
+        }
     }
 
     /**

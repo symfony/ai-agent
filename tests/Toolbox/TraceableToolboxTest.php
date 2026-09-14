@@ -12,12 +12,14 @@
 namespace Symfony\AI\Agent\Tests\Toolbox;
 
 use PHPUnit\Framework\TestCase;
+use Symfony\AI\Agent\Exception\RuntimeException;
 use Symfony\AI\Agent\Toolbox\ToolboxInterface;
 use Symfony\AI\Agent\Toolbox\ToolResult;
 use Symfony\AI\Agent\Toolbox\TraceableToolbox;
 use Symfony\AI\Platform\Result\ToolCall;
 use Symfony\AI\Platform\Tool\ExecutionReference;
 use Symfony\AI\Platform\Tool\Tool;
+use Symfony\Component\Stopwatch\Stopwatch;
 
 final class TraceableToolboxTest extends TestCase
 {
@@ -57,6 +59,37 @@ final class TraceableToolboxTest extends TestCase
 
         $traceableToolbox->reset();
         $this->assertCount(0, $traceableToolbox->getCalls());
+    }
+
+    public function testExecuteRecordsStopwatchEvent()
+    {
+        $stopwatch = new Stopwatch();
+        $traceableToolbox = new TraceableToolbox($this->createToolbox([]), $stopwatch);
+
+        $traceableToolbox->execute(new ToolCall('foo', 'my_tool'));
+
+        $event = $stopwatch->getEvent('ai.toolbox.execute "my_tool"');
+        $this->assertSame('ai', $event->getCategory());
+        $this->assertFalse($event->isStarted());
+        $this->assertCount(1, $event->getPeriods());
+    }
+
+    public function testExecuteStopsStopwatchEventOnFailure()
+    {
+        $toolbox = $this->createStub(ToolboxInterface::class);
+        $toolbox->method('execute')->willThrowException(new RuntimeException('Tool failed'));
+        $stopwatch = new Stopwatch();
+        $traceableToolbox = new TraceableToolbox($toolbox, $stopwatch);
+
+        try {
+            $traceableToolbox->execute(new ToolCall('foo', 'my_tool'));
+            $this->fail('Expected tool execution to fail.');
+        } catch (RuntimeException) {
+        }
+
+        $event = $stopwatch->getEvent('ai.toolbox.execute "my_tool"');
+        $this->assertFalse($event->isStarted());
+        $this->assertCount(1, $event->getPeriods());
     }
 
     /**
