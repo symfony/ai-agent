@@ -30,6 +30,7 @@ use Symfony\AI\Platform\Message\Content\File;
 use Symfony\AI\Platform\Message\Content\Text;
 use Symfony\AI\Platform\Message\MessageBag;
 use Symfony\AI\Platform\Message\ToolCallMessage;
+use Symfony\AI\Platform\Platform;
 use Symfony\AI\Platform\PlatformInterface;
 use Symfony\AI\Platform\Result\BinaryResult;
 use Symfony\AI\Platform\Result\DeferredResult;
@@ -49,7 +50,7 @@ use Symfony\AI\Platform\Result\ToolCallResult;
 use Symfony\AI\Platform\ResultConverterInterface;
 use Symfony\AI\Platform\StructuredOutput\Serializer;
 use Symfony\AI\Platform\StructuredOutput\Streaming\PartialObjectStreamListener;
-use Symfony\AI\Platform\Test\InMemoryPlatform;
+use Symfony\AI\Platform\Test\MockPlatformFactory;
 use Symfony\AI\Platform\TokenUsage\TokenUsage;
 use Symfony\AI\Platform\TokenUsage\TokenUsageAggregation;
 use Symfony\AI\Platform\Tool\ExecutionReference;
@@ -76,7 +77,7 @@ final class RunnerTest extends TestCase
 
         $options = $this->captureOptions($toolbox, []);
 
-        $this->assertSame(['tools' => [$tool1, $tool2]], $options);
+        $this->assertSame(['tools' => [$this->functionTool('tool1', 'description1'), $this->functionTool('tool2', 'description2')]], $options);
     }
 
     public function testRegisteredToolsGetFilteredByTheToolsOption()
@@ -88,7 +89,7 @@ final class RunnerTest extends TestCase
 
         $options = $this->captureOptions($toolbox, ['tools' => ['tool2']]);
 
-        $this->assertSame(['tools' => [$tool2]], $options);
+        $this->assertSame(['tools' => [$this->functionTool('tool2', 'description2')]], $options);
     }
 
     public function testAnEmptyToolsOptionExposesNoRegisteredTool()
@@ -284,7 +285,7 @@ final class RunnerTest extends TestCase
 
         $options = $this->captureOptions($toolbox, ['tools' => [$serverTool]]);
 
-        $this->assertSame(['tools' => [$tool1, $tool2, $serverTool]], $options);
+        $this->assertSame(['tools' => [$this->functionTool('tool1', 'description1'), $this->functionTool('tool2', 'description2'), $serverTool]], $options);
     }
 
     public function testServerToolsAreKeptWhileRegisteredToolsGetFilteredByName()
@@ -298,7 +299,7 @@ final class RunnerTest extends TestCase
 
         $options = $this->captureOptions($toolbox, ['tools' => ['tool2', $serverTool]]);
 
-        $this->assertSame(['tools' => [$tool2, $serverTool]], $options);
+        $this->assertSame(['tools' => [$this->functionTool('tool2', 'description2'), $serverTool]], $options);
     }
 
     public function testToolCallMessagesEndUpInTheCallersMessageBag()
@@ -717,7 +718,7 @@ final class RunnerTest extends TestCase
             ->willReturn(new ToolResult($toolCall, 'Test response'));
 
         // the model keeps asking for tools, which would loop forever without a cap
-        $platform = new InMemoryPlatform(static fn (): ToolCallResult => new ToolCallResult([$toolCall]));
+        $platform = MockPlatformFactory::createPlatform(static fn (): ToolCallResult => new ToolCallResult([$toolCall]));
         $runner = $this->createRunner($platform, $toolbox, maxToolCalls: 3);
 
         $this->expectException(MaxIterationsExceededException::class);
@@ -950,6 +951,14 @@ final class RunnerTest extends TestCase
     }
 
     /**
+     * @return array{type: 'function', function: array{name: string, description: string}}
+     */
+    private function functionTool(string $name, string $description): array
+    {
+        return ['type' => 'function', 'function' => ['name' => $name, 'description' => $description]];
+    }
+
+    /**
      * @param array<string, mixed> $options
      *
      * @return array<string, mixed>
@@ -957,7 +966,7 @@ final class RunnerTest extends TestCase
     private function captureOptions(ToolboxInterface $toolbox, array $options): array
     {
         $captured = [];
-        $platform = new InMemoryPlatform(static function (mixed $model, mixed $input, array $invocationOptions) use (&$captured): TextResult {
+        $platform = MockPlatformFactory::createPlatform(static function (mixed $model, mixed $input, array $invocationOptions) use (&$captured): TextResult {
             $captured = $invocationOptions;
 
             return new TextResult('Done');
@@ -1011,11 +1020,11 @@ final class RunnerTest extends TestCase
         );
     }
 
-    private function platform(ResultInterface ...$results): InMemoryPlatform
+    private function platform(ResultInterface ...$results): Platform
     {
         $invocation = 0;
 
-        return new InMemoryPlatform(static function () use (&$invocation, $results): ResultInterface {
+        return MockPlatformFactory::createPlatform(static function () use (&$invocation, $results): ResultInterface {
             if (!isset($results[$invocation])) {
                 throw new \LogicException(\sprintf('The platform was invoked %d times, but only %d results are configured.', $invocation + 1, \count($results)));
             }

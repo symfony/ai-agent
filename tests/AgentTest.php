@@ -41,7 +41,7 @@ use Symfony\AI\Platform\Result\Stream\Delta\TextDelta;
 use Symfony\AI\Platform\Result\StreamResult;
 use Symfony\AI\Platform\Result\ToolCall;
 use Symfony\AI\Platform\Result\ToolCallResult;
-use Symfony\AI\Platform\Test\InMemoryPlatform;
+use Symfony\AI\Platform\Test\MockPlatformFactory;
 use Symfony\AI\Platform\Tool\ExecutionReference;
 use Symfony\AI\Platform\Tool\Tool;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -81,7 +81,7 @@ final class AgentTest extends TestCase
     {
         $processor = new MessageBagCapturingProcessor();
 
-        $agent = new Agent(new InMemoryPlatform('Hi'), 'gpt-4o', [$processor]);
+        $agent = new Agent(MockPlatformFactory::createPlatform('Hi'), 'gpt-4o', [$processor]);
         $agent->call('Hello there')->getResult();
 
         $this->assertInstanceOf(MessageBag::class, $processor->messageBag);
@@ -96,7 +96,7 @@ final class AgentTest extends TestCase
         $processor = new MessageBagCapturingProcessor();
         $userMessage = Message::ofUser('Hello there');
 
-        $agent = new Agent(new InMemoryPlatform('Hi'), 'gpt-4o', [$processor]);
+        $agent = new Agent(MockPlatformFactory::createPlatform('Hi'), 'gpt-4o', [$processor]);
         $agent->call($userMessage)->getResult();
 
         $this->assertInstanceOf(MessageBag::class, $processor->messageBag);
@@ -108,7 +108,7 @@ final class AgentTest extends TestCase
         $processor = new MessageBagCapturingProcessor();
         $messageBag = new MessageBag(Message::ofUser('Hello there'));
 
-        $agent = new Agent(new InMemoryPlatform('Hi'), 'gpt-4o', [$processor]);
+        $agent = new Agent(MockPlatformFactory::createPlatform('Hi'), 'gpt-4o', [$processor]);
         $agent->call($messageBag)->getResult();
 
         $this->assertSame($messageBag, $processor->messageBag);
@@ -129,7 +129,7 @@ final class AgentTest extends TestCase
             }
         };
 
-        $agent = new Agent(new InMemoryPlatform('Hi'), 'gpt-4o', [$agentAwareProcessor]);
+        $agent = new Agent(MockPlatformFactory::createPlatform('Hi'), 'gpt-4o', [$agentAwareProcessor]);
         $agent->call(new MessageBag())->getResult();
 
         $this->assertSame($agent, $agentAwareProcessor->agent);
@@ -141,7 +141,7 @@ final class AgentTest extends TestCase
         $this->expectExceptionMessage(\sprintf('Input processor "stdClass" must implement "%s".', InputProcessorInterface::class));
 
         /** @phpstan-ignore-next-line argument.type */
-        $agent = new Agent(new InMemoryPlatform('Hi'), 'gpt-4o', [new \stdClass()]);
+        $agent = new Agent(MockPlatformFactory::createPlatform('Hi'), 'gpt-4o', [new \stdClass()]);
         $agent->call(new MessageBag())->getResult();
     }
 
@@ -151,7 +151,7 @@ final class AgentTest extends TestCase
         $this->expectExceptionMessage(\sprintf('Output processor "stdClass" must implement "%s".', OutputProcessorInterface::class));
 
         /** @phpstan-ignore-next-line argument.type */
-        $agent = new Agent(new InMemoryPlatform('Hi'), 'gpt-4o', [], [new \stdClass()]);
+        $agent = new Agent(MockPlatformFactory::createPlatform('Hi'), 'gpt-4o', [], [new \stdClass()]);
         $agent->call(new MessageBag())->getResult();
     }
 
@@ -331,7 +331,7 @@ final class AgentTest extends TestCase
             ->willReturn(new ToolResult($toolCall, 'Test response'));
 
         $invocations = 0;
-        $platform = new InMemoryPlatform(static function () use (&$invocations, $toolCall): ResultInterface {
+        $platform = MockPlatformFactory::createPlatform(static function () use (&$invocations, $toolCall): ResultInterface {
             if (++$invocations > 10) {
                 throw new \LogicException('The tool calling loop was not capped by max tool calls.');
             }
